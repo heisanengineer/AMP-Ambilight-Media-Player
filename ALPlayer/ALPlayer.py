@@ -1,548 +1,815 @@
-import colorsys
-import wcag_contrast_ratio as contrast
-import numpy as np
-import numpy
-import math
-from sklearn.cluster import KMeans
-from collections import Counter
-import time
-import cv2
+#Settings modülünde iyileştirmeler yapıldı
+
 import sys
 import os
-import wcag_contrast_ratio as contrast
-import colorsys
-from PIL import Image
 from os.path import exists
+import threading
+
 from configparser import ConfigParser
+import time
+import numpy as np
+import numpy
+import cv2
+
 import PyQt5
-from PyQt5 import QtCore, QtWidgets
-from PyQt5 import QtGui
+from PyQt5 import QtCore, QtWidgets, QtGui
 from PyQt5.QtCore import * 
 from PyQt5.QtGui import * 
 from PyQt5.QtWidgets import *
-from PyQt5.QtCore import QUrl, Qt
 from PyQt5 import QtWidgets
-from PyQt5.QtWidgets import QFileDialog
 from PyQt5 import uic
-from PyQt5.QtWidgets import QApplication
-from PyQt5.QtMultimediaWidgets import QVideoWidget
 from PyQt5.QtMultimedia import QMediaContent, QMediaPlayer, QVideoFrame, QAbstractVideoSurface, QAbstractVideoBuffer, QVideoSurfaceFormat
-from threading import Thread
+from PyQt5.QtMultimediaWidgets import QVideoWidget
+
 import yeelight
-import time
-from yeelight.main import Bulb
-from yeelight.main import discover_bulbs
+from yeelight.main import Bulb, discover_bulbs
 from yeelight import enums
 
-class DominantColors:
-    CLUSTERS = None
-    IMAGE = None
-    COLORS = None
-    LABELS = None
-    def __init__(self, image, clusters=3):
-        self.CLUSTERS = clusters
-        self.IMAGE = image
-    def dominantColors(self):
-        # read image
-        img_src = cv2.imread(self.IMAGE)
-        # percent by which the image is resized
-        scale_percent = 10
-        # calculate the 50 percent of original dimensions
-        width = int(img_src.shape[1] * scale_percent / 100)
-        height = int(img_src.shape[0] * scale_percent / 100)
-        # dsize
-        dsize = (width, height)
-        # resize image
-        small_img = cv2.resize(img_src, dsize)
-        # convert to rgb from bgr
-        img = cv2.cvtColor(small_img, cv2.COLOR_BGR2RGB)
-        # reshaping to a list of pixels
-        img = img.reshape((img.shape[0] * img.shape[1], 3))
-        # save image after operations
-        self.IMAGE = img
-        # using k-means to cluster pixels
-        kmeans = KMeans(n_clusters=self.CLUSTERS)
-        kmeans.fit(img)
-        # the cluster centers are our dominant colors.
-        self.COLORS = kmeans.cluster_centers_
-        # save labels
-        self.LABELS = kmeans.labels_
-        # returning after converting to integer from float
-        return self.COLORS.astype(int)
-
-class VideoFrameGrabber(QAbstractVideoSurface):
-    frameAvailable = pyqtSignal(QImage)
-    def __init__(self, widget: QWidget, parent: QObject):
-        super().__init__(parent)
-        self.widget = widget
-    def supportedPixelFormats(self, handleType):
-        return [QVideoFrame.Format_ARGB32, QVideoFrame.Format_ARGB32_Premultiplied,
-                QVideoFrame.Format_RGB32, QVideoFrame.Format_RGB24, QVideoFrame.Format_RGB565,
-                QVideoFrame.Format_RGB555, QVideoFrame.Format_ARGB8565_Premultiplied,
-                QVideoFrame.Format_BGRA32, QVideoFrame.Format_BGRA32_Premultiplied, QVideoFrame.Format_BGR32,
-                QVideoFrame.Format_BGR24, QVideoFrame.Format_BGR565, QVideoFrame.Format_BGR555,
-                QVideoFrame.Format_BGRA5658_Premultiplied, QVideoFrame.Format_AYUV444,
-                QVideoFrame.Format_AYUV444_Premultiplied, QVideoFrame.Format_YUV444,
-                QVideoFrame.Format_YUV420P, QVideoFrame.Format_YV12, QVideoFrame.Format_UYVY,
-                QVideoFrame.Format_YUYV, QVideoFrame.Format_NV12, QVideoFrame.Format_NV21,
-                QVideoFrame.Format_IMC1, QVideoFrame.Format_IMC2, QVideoFrame.Format_IMC3,
-                QVideoFrame.Format_IMC4, QVideoFrame.Format_Y8, QVideoFrame.Format_Y16,
-                QVideoFrame.Format_Jpeg, QVideoFrame.Format_CameraRaw, QVideoFrame.Format_AdobeDng]
-
-    def isFormatSupported(self, format):
-        imageFormat = QVideoFrame.imageFormatFromPixelFormat(format.pixelFormat())
-        size = format.frameSize()
-        return imageFormat != QImage.Format_Invalid and not size.isEmpty() and format.handleType() == QAbstractVideoBuffer.NoHandle
-
-    def start(self, format: QVideoSurfaceFormat):
-        imageFormat = QVideoFrame.imageFormatFromPixelFormat(format.pixelFormat())
-        size = format.frameSize()
-        if imageFormat != QImage.Format_Invalid and not size.isEmpty():
-            self.imageFormat = imageFormat
-            self.imageSize = size
-            self.sourceRect = format.viewport()
-            super().start(format)
-            self.widget.updateGeometry()
-            self.updateVideoRect()
-            return True
-        else:
-            return False
-    def stop(self):
-        self.currentFrame = QVideoFrame()
-        self.targetRect = QRect()
-        #super().stop()
-        self.widget.update()
-
-    def present(self, frame):
-        if frame.isValid():
-            cloneFrame = QVideoFrame(frame)
-            cloneFrame.map(QAbstractVideoBuffer.ReadOnly)
-            image = QImage(cloneFrame.bits(), cloneFrame.width(), cloneFrame.height(),
-                           QVideoFrame.imageFormatFromPixelFormat(cloneFrame.pixelFormat()))
-            self.frameAvailable.emit(image)  # this is very important
-            cloneFrame.unmap()
-
-        if self.surfaceFormat().pixelFormat() != frame.pixelFormat() or self.surfaceFormat().frameSize() != frame.size():
-            self.setError(QAbstractVideoSurface.IncorrectFormatError)
-            #self.stop()
-            return False
-        else:
-            self.currentFrame = frame
-            self.widget.repaint(self.targetRect)
-            return True
-    def updateVideoRect(self):
-        size = self.surfaceFormat().sizeHint()
-        size.scale(self.widget.size().boundedTo(size), Qt.KeepAspectRatio)
-
-        self.targetRect = QRect(QPoint(0, 0), size)
-        self.targetRect.moveCenter(self.widget.rect().center())
-
-    def paint(self, painter):
-        if self.currentFrame.map(QAbstractVideoBuffer.ReadOnly):
-            oldTransform = self.painter.transform()
-
-        if self.surfaceFormat().scanLineDirection() == QVideoSurfaceFormat.BottomToTop:
-            self.painter.scale(1, -1)
-            self.painter.translate(0, -self.widget.height())
-
-        image = QImage(self.currentFrame.bits(), self.currentFrame.width(), self.currentFrame.height(),
-                       self.currentFrame.bytesPerLine(), self.imageFormat)
-
-        self.painter.drawImage(self.targetRect, image, self.sourceRect)
-        self.painter.setTransform(oldTransform)
-        self.currentFrame.unmap()
-
-class VideoWidget(QVideoWidget):
-    def __init__(self, parent=None):
-        super(VideoWidget, self).__init__(parent)
-        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
-        #self.setStyleSheet("background-color: black")
-        p = self.palette()
-        p.setColor(QPalette.Window, Qt.black)
-        self.setPalette(p)
-        self.setAttribute(Qt.WA_OpaquePaintEvent)
-
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Escape and self.isFullScreen():
-            self.setFullScreen(False)
-            event.accept()
-        elif event.key() == Qt.Key_U:
-            self.setFullScreen(not self.isFullScreen())
-            event.accept()
-        else:
-            super(VideoWidget, self).keyPressEvent(event)
-    def mouseDoubleClickEvent(self, event):
-        self.setFullScreen(not self.isFullScreen())
-        event.accept()
+from Settings import ALP_Settings
+from AboutUs import ALP_AboutUs
+from Video import VideoWidget
+from VideoGrabber import GrabVideoSurface
+from Dominant import FindDominantColors
 
 class AL_Player(QtWidgets.QMainWindow):
-    def __init__(self):
-        self.bulb1 = Bulb("192.168.1.33", effect="smooth")
-        self.bulb2 = Bulb("192.168.1.39", effect="smooth")
-        try:
-            self.bulb1.stop_music()
-            self.bulb2.stop_music()
-        except:
-            pass
-        time.sleep(1)
-        self.bulb1.start_music(20000)
-        self.bulb2.start_music(20000)
-
-        self.bulb1.turn_off()
-        self.bulb2.turn_off()
-        super(AL_Player, self).__init__()
-        uic.loadUi('407.ui', self)
-        self.mainWindow = self.findChild(QtWidgets.QMainWindow, 'MainWindow')
-        self.settingsBox = self.findChild(QtWidgets.QGroupBox, 'settingsBox')
-        self.settingsBox.setVisible(False)
-        self.mediaPlayer = QMediaPlayer(None, QMediaPlayer.VideoSurface)
-        self.videoWidget = VideoWidget()
-        self.videoWidget.setStyleSheet("background-color: black")
-        self.grabber = VideoFrameGrabber(self.videoWidget, self)
-        self.mediaPlayer.setVideoOutput([self.videoWidget.videoSurface(),self.grabber])
-        self.grabber.frameAvailable.connect(self.process_frame)
-
-        #self.mediaPlayer.stateChanged.connect(self.StateChanged)
-        self.mediaPlayer.positionChanged.connect(self.positionChanged)
-        self.mediaPlayer.durationChanged.connect(self.durationChanged)
-        self.mediaPlayer.volumeChanged.connect(self.volumeChanged)
-        self.statusBar = QStatusBar()
-        self.setStatusBar(self.statusBar)
+    def __init__(self, parent=None):
+        super(AL_Player, self).__init__(parent)
+        self.ui = uic.loadUi('./Settings/ALPlayer.ui',self)
+        self.mainWindow = self.findChild(QtWidgets.QMainWindow, 'MainForm')
+        self.setStyleSheet('background-color: black;')
+        self.mediaPlayer =None
+        self.status_threads = False
         
-        self.vLayout = self.findChild(QtWidgets.QVBoxLayout, 'playvideoLayout')
-        self.vLayout.addWidget(self.videoWidget)
-        self.setFixedWidth(594)
-        self.setFixedHeight(500)
-        self.show()
+        ##Read Settings and Initilaze Bulb
+        self.firstBulbIp=None
+        self.secondBulbIp=None
+        self.thirdBulbIp=None
+        self.fourthBulbIp=None
+        self.bulbCount=None
+        self.AMLStatus=False
 
-        self.LeftTopLamp = self.findChild(QtWidgets.QPushButton, 'LeftTopLamp')
-        self.LeftBottomLamp = self.findChild(QtWidgets.QPushButton, 'LeftBottomLamp')
-        self.RightTopLamp = self.findChild(QtWidgets.QPushButton, 'RightTopLamp')
-        self.RightBottomLamp = self.findChild(QtWidgets.QPushButton, 'RightBottomLamp')
-
-        self.openmenu = self.findChild(QtWidgets.QAction, 'actionOpen')
-        self.openmenu.triggered.connect(self.openFile)
-
-        self.savesettingmenu = self.findChild(QtWidgets.QAction, 'actionSettings')
-        self.savesettingmenu.triggered.connect(self.saveSettings)
-
-        self.openmenu = self.findChild(QtWidgets.QAction, 'actionExit')
-        self.openmenu.triggered.connect(self.exitFun)
+        self.singleBulb=None
         
-        self.openbutton = self.findChild(QtWidgets.QPushButton, 'openButton')
-        self.openbutton.clicked.connect(self.openFile)
+        self.leftBulb=None
+        self.rightBulb=None
+        
+        self.leftTopBulb=None
+        self.rightTopBulb=None
+        self.leftBottomBulb=None
+        self.rightBottomBulb=None
+        
+        if exists('./Settings/Settings.ini') :
+                        
+           getSettingObj = ConfigParser()
+           getSettingObj.read('./Settings/Settings.ini')
+           countBulb= getSettingObj["COUNTBULB"]
+           self.bulbCount=int(countBulb["count"])
+           ipBulbs= getSettingObj["BULBS"]
+           self.firstBulbIp=ipBulbs["firstIp"]
+           self.secondBulbIp=ipBulbs["secondIp"]
+           self.thirdBulbIp=ipBulbs["thirdIp"]
+           self.fourthBulbIp=ipBulbs["fourthIp"]
+           
+           if self.bulbCount >0:
+               self.createBulb()
+               if not self.AMLStatus:
+                   popup= QMessageBox()
+                   popup.setWindowTitle("Connection Issues")
+                   popup.setText("Unexpected error occurred in lamp connections.\nPlease check your connection settings.")
+                   popup.setIcon(QMessageBox.Critical)
+                   self.AMLStatus=False
+                   res= popup.exec_()
+           else:
+               self.AMLStatus=False
+        else:
+            popup= QMessageBox()
+            popup.setWindowTitle("Adjustment Issue")
+            popup.setText("Settings file not found!!!\nPlease check your Bulb settings...")
+            popup.setIcon(QMessageBox.Warning)
+            res= popup.exec_()
+        ##End Read Settings and Initilaze Bulb
 
-        self.playbutton = self.findChild(QtWidgets.QPushButton, 'playButton')
-        self.playbutton.clicked.connect(self.playclick)
+        ##Windows Seetings
+        self.centralWidget = self.findChild(QtWidgets.QWidget, 'centralWidget')
+        self.titleWidget = self.findChild(QtWidgets.QWidget, 'titleWidget')
+        self.setWindowTitle("Ambilight Media Player")
+        
+        # Set the form without borders
+        self.setWindowFlags(Qt.FramelessWindowHint)
+        # Set the default value of mouse tracking judgment trigger
+        self._move_drag = False
+        self._corner_drag = False
+        self._bottom_drag = False
+        self._right_drag = False
+        self.setMouseTracking(True)
+        self.centralWidget.installEventFilter(self)  # Initialize event filter
+        self.titleWidget.installEventFilter(self)  # Initialize event filter
+        self.moveCenter()
+        ##End Windows Seetings
 
-        self.pausebutton = self.findChild(QtWidgets.QPushButton, 'pauseButton')
-        self.pausebutton.clicked.connect(self.pauseclick)
 
-        self.stopButton = self.findChild(QtWidgets.QPushButton, 'stopButton')
-        self.stopButton.clicked.connect(self.stopclick)
+        ##Connection Settings
+        self.minButton = self.findChild(QtWidgets.QPushButton, 'minButton')
+        self.minButton.clicked.connect(self.minButtonClicked)
 
-        self.fullscrbutton = self.findChild(QtWidgets.QPushButton, 'fullscrButton')
-        self.fullscrbutton.clicked.connect(self.fullscreen)
+        self.maxButton = self.findChild(QtWidgets.QPushButton, 'maxButton')
+        self.maxButton.clicked.connect(self.maxButtonClicked)
 
-        self.firstButton = self.findChild(QtWidgets.QPushButton, 'firstButton')
-        self.firstButton.clicked.connect(self.setFirst)
+        self.closeButton = self.findChild(QtWidgets.QPushButton, 'closeButton')
+        self.closeButton.clicked.connect(self.closeButtonClicked)
 
-        self.lastButton = self.findChild(QtWidgets.QPushButton, 'lastButton')
-        self.lastButton.clicked.connect(self.setLast)
+        
+        self.volumeSlider = self.findChild(QtWidgets.QSlider, 'volumeSlider')
+        self.volumeSlider.valueChanged.connect(self.setVolume)
 
-        self.preButton = self.findChild(QtWidgets.QPushButton, 'preButton')
-        self.preButton.clicked.connect(self.setPrev)
+
+        self.positionSlider = self.findChild(QtWidgets.QSlider, 'positionSlider')
+        self.positionSlider.sliderMoved.connect(self.setPosition)
+
+        
+        self.menuButton = self.findChild(QtWidgets.QPushButton, 'menuButton')
+        self.menuButton.setIcon(self.style().standardIcon(QStyle.SP_FileDialogListView))
+        self.menuButton.clicked.connect(self.showMenu)
+        
+        
+        self.playbutton = self.findChild(QtWidgets.QPushButton, 'playpauseButton')
+        self.playbutton.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+        self.playbutton.clicked.connect(self.playClick)
+
+        self.fwdButton = self.findChild(QtWidgets.QPushButton, 'fwdButton')
+        self.fwdButton.setIcon(self.style().standardIcon(QStyle.SP_MediaSeekBackward))
+        self.fwdButton.clicked.connect(self.setFwd)
+
+        self.bwdButton = self.findChild(QtWidgets.QPushButton, 'bwdButton')
+        self.bwdButton.setIcon(self.style().standardIcon(QStyle.SP_MediaSeekForward))
+        self.bwdButton.clicked.connect(self.setBwd)
 
         self.nextButton = self.findChild(QtWidgets.QPushButton, 'nextButton')
         self.nextButton.clicked.connect(self.setNext)
 
-        self.testButton = self.findChild(QtWidgets.QPushButton, 'testButton')
-        self.testButton.clicked.connect(self.testLamp)
+        self.prevButton = self.findChild(QtWidgets.QPushButton, 'prevButton')
+        self.prevButton.clicked.connect(self.setPrev)
 
-        self.settingsButton = self.findChild(QtWidgets.QPushButton, 'settingsButton')
-        self.settingsButton.clicked.connect(self.showSettings)
+        self.fullscrbutton = self.findChild(QtWidgets.QPushButton, 'fullScrButton')
+        self.fullscrbutton.setIcon(self.style().standardIcon(QStyle.SP_TitleBarMaxButton))
+        self.fullscrbutton.clicked.connect(self.fullScreen)
         
-        self.saveSetButton = self.findChild(QtWidgets.QPushButton, 'saveSetButton')
-        self.saveSetButton.clicked.connect(self.saveSettings)
-
-        self.discoverButton = self.findChild(QtWidgets.QPushButton, 'discoverButton')
-        self.discoverButton.clicked.connect(self.discoverBulbs)
         
-        self.progressSlider = self.findChild(QtWidgets.QSlider, 'progressSlider')
-        self.progressSlider.sliderMoved.connect(self.setPosition)
+        self.muteButton = self.findChild(QtWidgets.QPushButton, 'muteButton')
+        self.muteButton.setIcon(self.style().standardIcon(QStyle.SP_MediaVolume))
+        self.muteButton.clicked.connect(self.mutePlayer)
 
-        self.volumeSlider = self.findChild(QtWidgets.QSlider, 'volumeSlider')
-        self.volumeSlider.sliderMoved.connect(self.setVolume)
-
-        self.LeftTopBox = self.findChild(QtWidgets.QCheckBox,'LeftTopBox')
-        self.RightTopBox = self.findChild(QtWidgets.QCheckBox,'RightTopBox')
-        self.LeftBottomBox = self.findChild(QtWidgets.QCheckBox,'LeftBottomBox')
-        self.RightBottomBox = self.findChild(QtWidgets.QCheckBox,'RightBottomBox')
-
-        self.LeftTopIpEdit = self.findChild(QtWidgets.QLineEdit,'LeftTopIpEdit')
-        self.RightTopIpEdit = self.findChild(QtWidgets.QLineEdit,'RightTopIpEdit')
-        self.LeftBottomIpEdit = self.findChild(QtWidgets.QLineEdit,'LeftBottomIpEdit')
-        self.RightBottomIpEdit = self.findChild(QtWidgets.QLineEdit,'RightBottomIpEdit')
+        self.playingLabel=self.findChild(QtWidgets.QLabel, 'playingLabel')
         
-        if exists('settings.ini') :
-            try:
-                getObject = ConfigParser()
-                getObject.read("settings.ini")
-            
-                lTop = getObject["LEFTTOP"]
-                
-                if lTop["checked"]=="True":
-                    self.LeftTopBox.setChecked(True)
-                else:
-                    self.LeftTopBox.setChecked(False)
-                self.LeftTopIpEdit.setText(lTop["ip"])
+        self.reclistWidget=self.findChild(QtWidgets.QListWidget, 'reclistWidget')
+        self.reclistWidget.itemDoubleClicked.connect(self.recListDblClick)
 
-                lBottom = getObject["LEFTBOTTOM"]
-                if lBottom["checked"]=="True":
-                    self.LeftBottomBox.setChecked(True)
-                else:
-                    self.LeftBottomBox.setChecked(False)
-                self.LeftBottomIpEdit.setText(lBottom["ip"])
-
-                rTop = getObject["RIGHTTOP"]
-                if rTop["checked"]=="True":
-                    self.RightTopBox.setChecked(True)
-                else:
-                    self.RightTopBox.setChecked(False)
-                self.RightTopIpEdit.setText(rTop["ip"])
-
-                rBottom = getObject["RIGHTBOTTOM"]
-                if rBottom["checked"]=="True":
-                    self.RightBottomBox.setChecked(True)
-                else:
-                    self.RightBottomBox.setChecked(False)
-                self.RightBottomIpEdit.setText(rBottom["ip"])
-            except:
-                pass
-    
-    def sendColor(self):
-        img = 'l1.png'
-        clusters = 1
-        dc = DominantColors(img, clusters) 
-        ltcolors = dc.dominantColors()
-        img = 'r3.png'
+        self.shortCut = QShortcut(QKeySequence("F"), self)
+        self.shortCut.activated.connect(self.fullScreen)
+        self.shortCut = QShortcut(QKeySequence("Esc"), self)
+        self.shortCut.activated.connect(self.normalScreen)
         
-        dc = DominantColors(img, clusters) 
-        rtcolors = dc.dominantColors()
+        
+        ##End Connection Settings
 
-        self.bulb1.set_rgb(int(ltcolors[0,0]),int(ltcolors[0,1]),int(ltcolors[0,2]))
-        self.bulb2.set_rgb(int(rtcolors[0,0]),int(rtcolors[0,1]),int(rtcolors[0,2]))
+        ##Create VideoWidget
+        self.videoWidget = VideoWidget(self)
+        self.grabVideoSurface = GrabVideoSurface(self)
+        self.videoWidget.setAutoFillBackground(True)
+        self.videoLayout = self.findChild(QtWidgets.QVBoxLayout, 'playvideoLayout')
+        self.videoLayout.addWidget(self.videoWidget)
+        ##End VideoWidget
+        
+        self.createMenu()
+        self.show()
+        
+    ##Menu Functions
+    def createBulb(self):
+        if self.bulbCount==1:
+            if self.singleBulb is None:
+                try:
+                    self.singleBulb = Bulb(self.firstBulbIp, effect="smooth", auto_on=True)
+                    #self.singleBulb.turn_on()
+                    music=self.singleBulb.get_properties()
+                    if music['music_on']=='0':
+                        self.singleBulb.start_music(2023)
+                    else:
+                        self.singleBulb.stop_music()
+                        time.sleep(1)
+                        self.singleBulb.start_music(2023)
+                    self.singleBulb.set_color_temp(6500)
+                    self.AMLStatus=True
+                except:
+                    self.AMLStatus=False    
+        elif self.bulbCount==2:
+            if self.leftBulb is None:
+                try:
+                    self.leftBulb = Bulb(self.firstBulbIp, effect="smooth", auto_on=True)
+                    #self.leftBulb.turn_on()
+                    music=self.leftBulb.get_properties()
+                    if music['music_on']=='0':
+                        self.leftBulb.start_music(65443)
+                    else:
+                        self.leftBulb.stop_music()
+                        time.sleep(1)
+                        self.leftBulb.start_music(65443)
+                    self.leftBulb.set_color_temp(6500)
+                    self.AMLStatus=True
+                except:
+                    self.AMLStatus=False
+            if self.rightBulb is None:
+                try:
+                    self.rightBulb = Bulb(self.secondBulbIp, effect="smooth", auto_on=True)
+                    #self.rightBulb.turn_on()
+                    music=self.rightBulb.get_properties()
+                    if music['music_on']=='0':
+                        self.rightBulb.start_music(65443)
+                    else:
+                        self.rightBulb.stop_music()
+                        time.sleep(1)
+                        self.rightBulb.start_music(65443)
+                    self.rightBulb.set_color_temp(6500)
+                    self.AMLStatus=True
+                except:
+                    self.AMLStatus=False
+        elif self.bulbCount==3:
+            if self.leftTopBulb is None:
+                try:
+                    self.leftTopBulb = Bulb(self.firstBulbIp, effect="smooth", auto_on=True)
+                    #self.leftTopBulb.turn_on()
+                    music=self.leftTopBulb.get_properties()
+                    if music['music_on']=='0':
+                        self.leftTopBulb.start_music(2023)
+                    else:
+                        self.leftTopBulb.stop_music()
+                        time.sleep(1)
+                        self.leftTopBulb.start_music(2023)
+                    self.leftTopBulb.set_color_temp(6500)
+                    self.AMLStatus=True
+                except:
+                    self.AMLStatus=False
+            if self.rightTopBulb is None:
+                try:
+                    self.rightTopBulb = Bulb(self.secondBulbIp, effect="smooth", auto_on=True)
+                    #self.rightTopBulb.turn_on()
+                    music=self.rightTopBulb.get_properties()
+                    if music['music_on']=='0':
+                        self.rightTopBulb.start_music(2023)
+                    else:
+                        self.rightTopBulb.stop_music()
+                        time.sleep(1)
+                        self.rightTopBulb.start_music(2023)
+                    self.rightTopBulb.set_color_temp(6500)
+                    self.AMLStatus=True
+                except:
+                    self.AMLStatus=False
+            if self.leftBottomBulb is None:
+                try:
+                    self.leftBottomBulb = Bulb(self.thirdBulbIp, effect="smooth", auto_on=True)
+                    #self.leftBottomBulb.turn_on()
+                    music=self.leftBottomBulb.get_properties()
+                    if music['music_on']=='0':
+                        self.leftBottomBulb.start_music(2023)
+                    else:
+                        self.leftBottomBulb.stop_music()
+                        time.sleep(1)
+                        self.leftBottomBulb.start_music(2023)
+                    self.leftBottomBulb.set_color_temp(6500)
+                    self.AMLStatus=True
+                except:
+                    self.AMLStatus=False
+            if self.rightBottomBulb is None:
+                try:
+                    self.rightBottomBulb = Bulb(self.fourthBulbIp, effect="smooth", auto_on=True)
+                    #self.rightBottomBulb.turn_on()
+                    music=self.rightBottomBulb.get_properties()
+                    if music['music_on']=='0':
+                        self.rightBottomBulb.start_music(2023)
+                    else:
+                        self.rightBottomBulb.stop_music()
+                        time.sleep(1)
+                        self.rightBottomBulb.start_music(2023)
+                    self.rightBottomBulb.set_color_temp(6500)
+                    self.AMLStatus=True
+                except:
+                    self.AMLStatus=False
+        
+    def closeBulb(self):
+        if self.bulbCount==1:
+               self.singleBulb.turn_off()
+        elif self.bulbCount==2:
+               self.leftBulb.turn_off() 
+               self.rightBulb.turn_off()
+        elif self.bulbCount==3:
+               self.leftTopBulb.turn_off() 
+               self.rightTopBulb.turn_off()
+               self.leftBottomBulb.turn_off()
+               self.rightBottomBulb.turn_off()
+               
+    def openBulb(self):
+        if self.bulbCount==1:
+               self.singleBulb.turn_on()
+        elif self.bulbCount==2:
+               self.leftBulb.turn_on() 
+               self.rightBulb.turn_on()
+        elif self.bulbCount==3:
+               self.leftTopBulb.turn_on() 
+               self.rightTopBulb.turn_on()
+               self.leftBottomBulb.turn_on()
+               self.rightBottomBulb.turn_on()
 
-    def process_frame(self, image):
-        self.divideImage4part(self.convertQImageToMat(image))
-        self.sendColor()
+    def createMenu(self):
+        self.myMenu = QtWidgets.QMenu(self)
+        openAction=QtWidgets.QAction('Open Video File', self)
+        openAction.triggered.connect(self.openFile)
+        self.myMenu.addAction(openAction)
 
-    def divideImage4part(self,img):
-        height = img.shape[0]
-        width = img.shape[1]
-        width_cutoff = width // 2
-        left1 = img[:, :width_cutoff]
-        right1 = img[:, width_cutoff:]
-        img = cv2.rotate(left1, cv2.ROTATE_90_CLOCKWISE)
-        height = img.shape[0]
-        width = img.shape[1]
-        width_cutoff = width // 2
-        l2 = img[:, :width_cutoff]
-        l1 = img[:, width_cutoff:]
-        l2 = cv2.rotate(l2, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        cv2.imwrite("l2.png", l2)
-        l1 = cv2.rotate(l1, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        cv2.imwrite("l1.png", l1)
-        img = cv2.rotate(right1, cv2.ROTATE_90_CLOCKWISE)
-        height = img.shape[0]
-        width = img.shape[1]
-        width_cutoff = width // 2
-        r4 = img[:, :width_cutoff]
-        r3 = img[:, width_cutoff:]
-        r4 = cv2.rotate(r4, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        cv2.imwrite("r4.png", r4)
-        r3 = cv2.rotate(r3, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        cv2.imwrite("r3.png", r3)
+        settingsAction=QtWidgets.QAction('Show Settings', self)
+        settingsAction.triggered.connect(self.openSettings)
+        self.myMenu.addAction(settingsAction)
+        
+        
+        self.myMenu.addSeparator()
+        aUsAction=QtWidgets.QAction('About Us', self)
+        aUsAction.triggered.connect(self.aboutUs)
+        self.myMenu.addAction(aUsAction)
+        
+        self.myMenu.addSeparator()
+        closeAction=QtWidgets.QAction('Exit', self)
+        closeAction.triggered.connect(self.closeButtonClicked)
+        self.myMenu.addAction(closeAction)
+        self.myMenu.setStyleSheet('''
+                                    background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0, stop:0 rgba(59, 65, 65, 255), stop:1 rgba(40, 44, 51, 255));
+                                    font: 75 10pt "Arial";
+                                    border-style: solid;
+                                    border-color: #050a0e;
+                                    border-width: 1px;
+                                    padding: 2px;
+                                    color:rgb(231, 231, 231);
+                                    selection-color: black;
+                                    selection-background-color: rgb(231, 231, 231);
+                                ''')
+    def showMenu(self):
+        self.myMenu.exec_(QCursor.pos())
+    ##End Menu Functions    
 
-
-    def convertQImageToMat(self,incomingImage):
-        '''  Converts a QImage into an opencv MAT format  '''
-        incomingImage = incomingImage.convertToFormat(4)
-        width = incomingImage.width()
-        height = incomingImage.height()
-        ptr = incomingImage.bits()
-        ptr.setsize(incomingImage.byteCount())
-        arr = np.array(ptr).reshape(height, width, 4)  #  Copies the data
-        return arr
-
-    def showSettings(self):
-        self.settingsBox.setVisible(not self.settingsBox.isVisible())
-        if self.settingsBox.isVisible():
-            self.setFixedWidth(594)
-            self.setFixedHeight(610)
+    ##Min_Max_Close Functions    
+    def minButtonClicked(self):
+        self.showMinimized()
+        
+    def maxButtonClicked(self):
+        if self.isMaximized():
+            self.showNormal()
+            self.maxButton.setText('1')  
+            self.maxButton.setToolTip("Maximize")
         else:
-            self.setFixedWidth(594)
-            self.setFixedHeight(500)
+            self.showMaximized()
+            self.maxButton.setText('2')
+            self.maxButton.setToolTip("Normal")
 
-    def openFile(self):
-        fileName = QFileDialog.getOpenFileName(self, "Select and Open Video", "/home")[0]
-        self.FName=fileName
-        self.bulb1.turn_off()
-        self.bulb2.turn_off()
-        if fileName != '':
-            self.mediaPlayer.setMedia(QMediaContent(QUrl.fromLocalFile(fileName)))
-            self.statusBar.showMessage(fileName)
-            self.playbutton.setEnabled(True)
-            self.volumeSlider.setValue(self.mediaPlayer.volume())
+    def closeButtonClicked(self):
+        if self.AMLStatus == True:
+            self.closeBulb()
+        sys.exit()
+    ##End Min_Max_Close Functions
 
-    def playclick(self):
-        self.mediaPlayer.play()
-        self.bulb1.turn_on()
-        self.bulb2.turn_on()
+    ##Main Form Event Functions
+    #In this part of the code, examples
+    #from https://www.fatalerrors.org/a/0N921Q.html were used.
     
-    def pauseclick(self):
-        self.mediaPlayer.pause()
+    def moveCenter(self):
+        #Positions the window in the center of the screen
+        fg = self.frameGeometry()
+        centerpoint = QDesktopWidget().availableGeometry().center()
+        fg.moveCenter(centerpoint)
+        self.move(fg.topLeft())
+        
+    def eventFilter(self, obj, event):
+        # Setting standard mouse style after entering other controls
+        if isinstance(event, QEnterEvent):
+            self.setCursor(Qt.ArrowCursor)
+        if self.windowState()in[QtCore.Qt.WindowMinimized]:
+           # Window is minimised. Restore it.
+           self.setAttribute(Qt.WA_Mapped)
+        return super(AL_Player, self).eventFilter(obj, event)
+        
 
-    def stopclick(self):
-        self.mediaPlayer.stop()
-        self.bulb1.turn_off()
-        self.bulb2.turn_off()
+    def resizeEvent(self, QResizeEvent):
+        # Custom window sizing events
+        # Change the window size by three coordinate ranges
+        self._right_rect = [QPoint(x, y) for x in range(self.width() - 5, self.width() + 5)
+                            for y in range(self.titleWidget.height() + 20, self.height() - 5)]
+        self._bottom_rect = [QPoint(x, y) for x in range(1, self.width() - 5)
+                             for y in range(self.height() - 5, self.height() + 1)]
+        self._corner_rect = [QPoint(x, y) for x in range(self.width() - 5, self.width() + 1)
+                             for y in range(self.height() - 5, self.height() + 1)]
 
-    def fullscreen(self):
-        self.videoWidget.setFullScreen(True)
+    def mousePressEvent(self, event):
+        # Override mouse click events
+        if (event.button() == Qt.LeftButton) and (event.pos() in self._corner_rect):
+            self._corner_drag = True
+            event.accept()
+        elif (event.button() == Qt.LeftButton) and (event.pos() in self._right_rect):
+            self._right_drag = True
+            event.accept()
+        elif (event.button() == Qt.LeftButton) and (event.pos() in self._bottom_rect):
+            self._bottom_drag = True
+            event.accept()
+        elif (event.button() == Qt.LeftButton) and (event.y() < self.titleWidget.height()):
+            self._move_drag = True
+            self.move_DragPosition = event.globalPos() - self.pos()
+            event.accept()
 
-    def mouseDoubleClickEvent(self, event):
-        self.videoWidget.setFullScreen(not self.videoWidget.isFullScreen())
-        event.accept()
+    def mouseMoveEvent(self, QMouseEvent):
+        if QMouseEvent.pos() in self._corner_rect:  
+            self.setCursor(Qt.SizeFDiagCursor)
+        elif QMouseEvent.pos() in self._bottom_rect:
+            self.setCursor(Qt.SizeVerCursor)
+        elif QMouseEvent.pos() in self._right_rect:
+            self.setCursor(Qt.SizeHorCursor)
+        if Qt.LeftButton and self._right_drag:
+            self.resize(QMouseEvent.pos().x(), self.height())
+            QMouseEvent.accept()
+        elif Qt.LeftButton and self._bottom_drag:
+            self.resize(self.width(), QMouseEvent.pos().y())
+            QMouseEvent.accept()
+        elif Qt.LeftButton and self._corner_drag:
+            self.resize(QMouseEvent.pos().x(), QMouseEvent.pos().y())
+            QMouseEvent.accept()
+        elif Qt.LeftButton and self._move_drag:
+            self.move(QMouseEvent.globalPos() - self.move_DragPosition)
+            QMouseEvent.accept()
 
+    def mouseReleaseEvent(self, QMouseEvent):
+        self._move_drag = False
+        self._corner_drag = False
+        self._bottom_drag = False
+        self._right_drag = False
+        
+    def changeEvent(self,event):
+        if event.type() == QEvent.WindowStateChange:
+            if not(self.isMinimized()):
+                self.setAttribute(Qt.WA_Mapped)
+                self.videoWidget.updateGeometry()
+    
+    ##End Main Form Event Functions
+        
+    
+    ##Media Player Functions
+    def openFile(self):
+        files_types = "MPEG-4 Video File (*.mp4);;Audio Video Interleave File (*.avi);;Matroska Video File (*.mkv);;MPEG Video (*.mpeg);;Windows Media Video (*.wmv);;MPEG-4 Playlist (*.m4u);;MPEG Video File (*.mpg);;All Files (*.*)"
+        self.fileName = QFileDialog.getOpenFileName(self, "Select and Open Video", "/",files_types)[0]
+        if self.fileName != '':
+            if self.mediaPlayer ==None:
+                self.mediaPlayer = QMediaPlayer(None, QMediaPlayer.VideoSurface)
+                self.videoWidget.setMediaPlayer(self.mediaPlayer)
+                self.mediaPlayer.setVideoOutput([self.videoWidget.videoSurface(), self.grabVideoSurface])
+                self.mediaPlayer.stateChanged.connect(self.stateChanged)
+                self.mediaPlayer.positionChanged.connect(self.positionChanged)
+                self.mediaPlayer.durationChanged.connect(self.durationChanged)
+                self.mediaPlayer.volumeChanged.connect(self.volumeChanged)
+                
+            self.mediaPlayer.stop()    
+            self.mediaPlayer.setMedia(QMediaContent(QUrl.fromLocalFile(self.fileName)))
+            
+            self.playingLabel.setText("Playing: "+self.fileName)
+            QListWidgetItem(self.fileName,self.reclistWidget)
+            self.reclistWidget.setCurrentRow(self.reclistWidget.count()-1)
+            self.playbutton.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+            self.playbutton.setChecked(False)
+
+    def openSettings(self):
+        if self.mediaPlayer!=None:
+            self.mediaPlayer.pause()
+            self.playbutton.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+            self.playbutton.setChecked(False)
+        self.settingsWindow = ALP_Settings(self)
+        self.settingsWindow.show()
+        
+    def aboutUs(self):
+        if self.mediaPlayer!=None:
+            self.mediaPlayer.pause()
+            self.playbutton.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+            self.playbutton.setChecked(False)
+        
+        self.aUsWindow = ALP_AboutUs(self)
+        self.aUsWindow.show()
+        
+    def changeColorThared(self, status):
+        while True:
+            if self.AMLStatus == True:
+                image = self.grabVideoSurface.getCurrentFrame
+                if not image.isNull():
+                    img_list=self.divideImage(self.convertQImageToMat(image))
+                    self.sendColor(img_list)
+            if status():
+                break
+                
+    def playClick(self):
+        if self.mediaPlayer!=None:
+            if self.playbutton.isChecked():
+                self.mediaPlayer.play()
+                self.status_threads = False
+                self.threads1 = threading.Thread(target=self.changeColorThared, daemon=True, args =(lambda : self.status_threads, ))
+                self.threads1.start()
+            else:
+                self.mediaPlayer.pause()
+       
+    def mutePlayer(self):
+        if self.mediaPlayer!=None:
+            self.mediaPlayer.setMuted(not self.mediaPlayer.isMuted())
+            if self.mediaPlayer.isMuted():
+                self.muteButton.setIcon(self.style().standardIcon(QStyle.SP_MediaVolumeMuted))
+            else:
+                self.muteButton.setIcon(self.style().standardIcon(QStyle.SP_MediaVolume))
+    
+    def fullScreen(self):
+        if self.mediaPlayer!=None:
+            if self.mediaPlayer.state()in [QMediaPlayer.PausedState, QMediaPlayer.PlayingState]:
+                self.videoWidget.setFullScreen(True)
+                self.videoWidget.setCursor(Qt.BlankCursor)
+                
+    def normalScreen(self):
+        if self.mediaPlayer!=None:
+            if self.mediaPlayer.state()in [QMediaPlayer.PausedState, QMediaPlayer.PlayingState]:
+                self.videoWidget.setFullScreen(False)
+                self.videoWidget.setCursor(Qt.ArrowCursor)
+                    
     def positionChanged(self, position):
-        self.progressSlider.setValue(position)
-
+        self.positionSlider.setValue(position)
+        
+        
     def durationChanged(self, duration):
-        self.progressSlider.setRange(0, duration)
+        self.positionSlider.setRange(0, duration)
 
     def volumeChanged(self, volume):
-        self.volumeSlider.setValue(volume)
+        if self.mediaPlayer!=None:
+            self.volumeSlider.setValue(volume)
+            if volume<1:
+                self.muteButton.setIcon(self.style().standardIcon(QStyle.SP_MediaVolumeMuted))
+            else:
+                self.muteButton.setIcon(self.style().standardIcon(QStyle.SP_MediaVolume))
+                self.mediaPlayer.setMuted(False)
+                
 
     def setPosition(self, position):
-        self.mediaPlayer.setPosition(position)
-        if position==self.mediaPlayer.duration:
-            self.bulb1.turn_off()
-            self.bulb2.turn_off()
-
+        if self.mediaPlayer!=None:
+            self.mediaPlayer.setPosition(position)
+        
     def setVolume(self, volume):
-        self.mediaPlayer.setVolume(volume)
+        if self.mediaPlayer!=None:
+            self.mediaPlayer.setVolume(volume)
 
-    def setPrev(self,position):
-        self.mediaPlayer.setPosition(self.mediaPlayer.position()-1000)
+    def setFwd(self,position):
+        if self.mediaPlayer!=None:
+            self.mediaPlayer.setPosition(self.mediaPlayer.position()-1000)
 
-    def setNext(self,position):
-        self.mediaPlayer.setPosition(self.mediaPlayer.position()+1000)
+    def setBwd(self,position):
+        if self.mediaPlayer!=None:
+            self.mediaPlayer.setPosition(self.mediaPlayer.position()+1000)
 
-    def setFirst(self):
-        self.mediaPlayer.setPosition(0)
-        self.bulb1.turn_on()
-        self.bulb2.turn_on()
+    def setNext(self):
+        current=self.reclistWidget.currentRow()
+        total=self.reclistWidget.count()-1
+        if current<total:
+            current+=1
+            self.reclistWidget.setCurrentRow(current)
+            if self.mediaPlayer!=None:
+                self.mediaPlayer.stop()
+                
+                file=self.reclistWidget.currentItem().text()
+                self.mediaPlayer.setMedia(QMediaContent(QUrl.fromLocalFile(file)))
+                
+                self.playingLabel.setText("Playing: "+file)
+                self.playbutton.setText("4")
+                self.playbutton.setChecked(False)
+            
+    def setPrev(self):
+        current=self.reclistWidget.currentRow()
+        if current>0:
+            current-=1
+            self.reclistWidget.setCurrentRow(current)
+            if self.mediaPlayer!=None:
+                self.mediaPlayer.stop()
+                
+                file=self.reclistWidget.currentItem().text()
+                self.mediaPlayer.setMedia(QMediaContent(QUrl.fromLocalFile(file)))
+                
+                self.playingLabel.setText("Playing: "+file)
+                self.playbutton.setText("4")
+                self.playbutton.setChecked(False)
+        
+    def recListDblClick(self,item):
+        if self.mediaPlayer !=None:
+            self.mediaPlayer.stop()
+            self.mediaPlayer.setMedia(QMediaContent(QUrl.fromLocalFile(item.text())))
+            self.playingLabel.setText("Playing: "+item.text())
+            self.playbutton.setText("4")
+            self.playbutton.setChecked(False)
 
-    def setLast(self, duration):
-        self.mediaPlayer.setPosition(self.mediaPlayer.duration())
-        self.bulb1.turn_off()
-        self.bulb2.turn_off()
+    def stateChanged(self,status):
+        if status in [QMediaPlayer.EndOfMedia,QMediaPlayer.StoppedState]:
+            self.status_threads = True
+            self.threads1.join()
+            self.playbutton.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+            self.playbutton.setChecked(False)
+            self.mediaPlayer.setPosition(0)
+            if self.AMLStatus == True:
+                self.closeBulb()
+        if status in [QMediaPlayer.PausedState]:
+            self.status_threads = True
+            self.threads1.join()
+            self.playbutton.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+            self.playbutton.setChecked(False)
+        if status in [QMediaPlayer.PlayingState]:
+            self.playbutton.setIcon(self.style().standardIcon(QStyle.SP_MediaPause))
+            self.playbutton.setChecked(True)
+            if self.status_threads:
+                self.status_threads = False
+                self.threads1 = threading.Thread(target=self.changeColorThared, daemon=True, args =(lambda : self.status_threads, ))
+                self.threads1.start()
+            if self.AMLStatus == True:
+                self.openBulb()
+            
+    def divideImage(self,img):
+        image_list=list()
+        if self.bulbCount==1:
+            image_list.append(img)
+            return image_list
+        elif self.bulbCount==2:
+            height = img.shape[0]
+            width = img.shape[1]
+            width_cutoff = width // 2
+            left = img[:, :width_cutoff]
+            right = img[:, width_cutoff:]
+            image_list.append(left)
+            image_list.append(right)
+            return image_list
+        elif self.bulbCount==3:
+            height = img.shape[0]
+            width = img.shape[1]
+            width_cutoff = width // 2
+            left1 = img[:, :width_cutoff]
+            right1 = img[:, width_cutoff:]
+            img = cv2.rotate(left1, cv2.ROTATE_90_CLOCKWISE)
+            height = img.shape[0]
+            width = img.shape[1]
+            width_cutoff = width // 2
+            left12 = img[:, :width_cutoff]
+            left11 = img[:, width_cutoff:]
+            left12 = cv2.rotate(left12, cv2.ROTATE_90_COUNTERCLOCKWISE)
+            image_list.append(left12)
+            left11 = cv2.rotate(left11, cv2.ROTATE_90_COUNTERCLOCKWISE)
+            image_list.append(left11)
+            img = cv2.rotate(right1, cv2.ROTATE_90_CLOCKWISE)
+            height = img.shape[0]
+            width = img.shape[1]
+            width_cutoff = width // 2
+            right12 = img[:, :width_cutoff]
+            right11 = img[:, width_cutoff:]
+            right12 = cv2.rotate(right12, cv2.ROTATE_90_COUNTERCLOCKWISE)
+            image_list.append(right12)
+            right11 = cv2.rotate(right11, cv2.ROTATE_90_COUNTERCLOCKWISE)
+            image_list.append(right11)
+            return image_list
+
+    def convertQImageToMat(self,sourceImage):
+        #Converts QImage to MAT format
+        sourceImage = sourceImage.convertToFormat(4)
+        width = sourceImage.width()
+        height = sourceImage.height()
+        ptr = sourceImage.bits()
+        ptr.setsize(sourceImage.byteCount())
+        arr = np.array(ptr).reshape(height, width, 4)
+        return arr
     
-    def exitFun(self):
-        self.bulb1.turn_off()
-        self.bulb2.turn_off()
-        sys.exit(app.exec_())
-
-    def discoverBulbs(self):#Burada liste boş geliyor. Bakılacak
-        bulbs = discover_bulbs()
-        print(bulbs)
-    
-    def lampCheckFun(self,ip):
-        bulb = Bulb(ip, effect="smooth")
-        try:
+    def sendColor(self,list):
+        if self.bulbCount==1:
+            img = list[0]
+            clusters = 4
+            dc = FindDominantColors(img, clusters)
+            singleColors = dc.dominantColors()
             try:
-                bulb.stop_music()
+                if dc.MAXINDEX > -1:
+                    self.singleBulb.turn_on()
+                    self.singleBulb.set_rgb(int(singleColors[dc.MAXINDEX][0]), int(singleColors[dc.MAXINDEX][1]), int(singleColors[dc.MAXINDEX][2]))
+                    self.singleBulb.set_brightness(dc.BRIGHTNESS)
+                else:
+                    self.singleBulb.turn_off()
             except:
                 pass
-            time.sleep(1)
-            bulb.start_music(20000)
-            bulb.turn_on()
-            time.sleep(1)
-            bulb.turn_off()
-            time.sleep(1)
-            bulb.set_rgb(230,30,20)
-            bulb.turn_on()
-            return True
-        except:
-            return False
+            
+        elif self.bulbCount==2:
+            leftimg = list[0]
+            rightimg = list[1]
+            clusters = 4
+            dc = FindDominantColors(leftimg, clusters)
+            doubleColors = dc.dominantColors()
+            leftBrightness=dc.BRIGHTNESS
+            leftMaxindex=dc.MAXINDEX
+            leftR=int(doubleColors[leftMaxindex][0])
+            leftG=int(doubleColors[leftMaxindex][1])
+            leftB=int(doubleColors[leftMaxindex][2])
+            dc = FindDominantColors(rightimg, clusters) 
+            doubleColors = dc.dominantColors()
+            rightBrightness=dc.BRIGHTNESS
+            rightMaxindex=dc.MAXINDEX
+            rightR=int(doubleColors[rightMaxindex][0])
+            rightG=int(doubleColors[rightMaxindex][1])
+            rightB=int(doubleColors[rightMaxindex][2])
+            try:
+                if leftMaxindex > -1:
+                    self.leftBulb.turn_on()
+                    self.leftBulb.set_rgb(leftR,leftG,leftB)
+                    self.leftBulb.set_brightness(leftBrightness)
+                else:
+                    self.leftBulb.turn_off()
 
-    def testLamp(self):
-        if self.LeftTopBox.isChecked():
-            st1=self.lampCheckFun(self.LeftTopIpEdit.text())
-            if st1:
-                self.LeftTopLamp.setEnabled(True)
-            else:
-                self.LeftTopLamp.setEnabled(False)
-
-        if self.RightTopBox.isChecked():
-            st2=self.lampCheckFun(self.RightTopIpEdit.text())
-            if st2:
-                self.RightTopLamp.setEnabled(True)
-            else:
-                self.RightTopLamp.setEnabled(False)
-
-        if self.LeftBottomBox.isChecked():
-            st3=self.lampCheckFun(self.LeftBottomIpEdit.text())
-            if st3:
-                self.LeftBottomLamp.setEnabled(True)
-            else:
-                self.LeftBottomLamp.setEnabled(False)
-
-        if self.RightBottomBox.isChecked():
-            st4=self.lampCheckFun(self.RightBottomIpEdit.text())
-            if st4:
-                self.RightBottomLamp.setEnabled(True)
-            else:
-                self.RightBottomLamp.setEnabled(False)
-
-    def saveSettings(self):
-        settingObject = ConfigParser()
-        settingObject["LEFTTOP"] = {
-        "checked": self.LeftTopBox.isChecked(),
-        "ip": self.LeftTopIpEdit.text()
-        }
-
-        settingObject["LEFTBOTTOM"] = {
-        "checked": self.LeftBottomBox.isChecked(),
-        "ip": self.LeftBottomIpEdit.text()
-        }
-
-        settingObject["RIGHTTOP"] = {
-        "checked": self.RightTopBox.isChecked(),
-        "ip": self.RightTopIpEdit.text()
-        }
-
-        settingObject["RIGHTBOTTOM"] = {
-        "checked": self.RightBottomBox.isChecked(),
-        "ip": self.RightBottomIpEdit.text()
-        }
-
-        with open('settings.ini', 'w') as set:
-            settingObject.write(set)
+                if rightMaxindex > -1:
+                    self.rightBulb.turn_on()
+                    self.rightBulb.set_rgb(rightR,rightG,rightB)
+                    self.rightBulb.set_brightness(rightBrightness)
+                else:
+                    self.rightBulb.turn_off()
+            except:
+                pass
         
-        self.statusBar.showMessage("Settings are saved")
+        elif self.bulbCount==3:
+            
+            leftTopimg = list[1]
+            rightTopimg = list[3]
+            leftBotimg = list[0]
+            rightBotimg = list[2]
+            clusters = 4
+            
+            dc = FindDominantColors(leftTopimg, clusters)
+            fourColors = dc.dominantColors()
+            leftTopBrightness=dc.BRIGHTNESS
+            leftTopMaxindex=dc.MAXINDEX
+            leftTopR=int(fourColors[leftTopMaxindex][0])
+            leftTopG=int(fourColors[leftTopMaxindex][1])
+            leftTopB=int(fourColors[leftTopMaxindex][2])
+            
+            dc = FindDominantColors(rightTopimg, clusters) 
+            fourColors = dc.dominantColors()
+            rightTopBrightness=dc.BRIGHTNESS
+            rightTopMaxindex=dc.MAXINDEX
+            rightTopR=int(fourColors[rightTopMaxindex][0])
+            rightTopG=int(fourColors[rightTopMaxindex][1])
+            rightTopB=int(fourColors[rightTopMaxindex][2])
+
+            dc = FindDominantColors(leftBotimg, clusters)
+            fourColors = dc.dominantColors()
+            leftBotBrightness=dc.BRIGHTNESS
+            leftBotMaxindex=dc.MAXINDEX
+            leftBotR=int(fourColors[leftBotMaxindex][0])
+            leftBotG=int(fourColors[leftBotMaxindex][1])
+            leftBotB=int(fourColors[leftBotMaxindex][2])
+            
+            dc = FindDominantColors(rightBotimg, clusters) 
+            fourColors = dc.dominantColors()
+            rightBotBrightness=dc.BRIGHTNESS
+            rightBotMaxindex=dc.MAXINDEX
+            rightBotR=int(fourColors[rightBotMaxindex][0])
+            rightBotG=int(fourColors[rightBotMaxindex][1])
+            rightBotB=int(fourColors[rightBotMaxindex][2])
+
+            try:
+                if leftTopMaxindex > -1:
+                    self.leftTopBulb.turn_on()
+                    self.leftTopBulb.set_rgb(leftTopR,leftTopG,leftTopB)
+                    self.leftTopBulb.set_brightness(leftTopBrightness)
+                else:
+                    self.leftTopBulb.turn_off()
+
+                if rightTopMaxindex > -1:
+                    self.rightTopBulb.turn_on()
+                    self.rightTopBulb.set_rgb(rightTopR,rightTopG,rightTopB)
+                    self.rightTopBulb.set_brightness(rightTopBrightness)
+                else:
+                    self.rightTopBulb.turn_off()
+
+                if leftBotMaxindex > -1:
+                    self.leftBottomBulb.turn_on()
+                    self.leftBottomBulb.set_rgb(leftBotR,leftBotG,leftBotB)
+                    self.leftBottomBulb.set_brightness(leftBotBrightness)
+                else:
+                    self.leftBottomBulb.turn_off()
+
+                if rightBotMaxindex > -1:
+                    self.rightBottomBulb.turn_on()
+                    self.rightBottomBulb.set_rgb(rightBotR,rightBotG,rightBotB)
+                    self.rightBottomBulb.set_brightness(rightBotBrightness)
+                else:
+                    self.rightBottomBulb.turn_off()
+            except:
+                pass
+            
+    ##End Media Player Functions
 
 if __name__ == '__main__':
-
-    def except_hook(cls, exception, traceback):
-        sys.__excepthook__(cls, exception, traceback)
-    if hasattr(QtCore.Qt, 'AA_EnableHighDpiScaling'):
-        PyQt5.QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
-    if hasattr(QtCore.Qt, 'AA_UseHighDpiPixmaps'):
-        PyQt5.QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps, True)
+    QtCore.QCoreApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling)    
     app = QtWidgets.QApplication(sys.argv)
-    app.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling)
-    sys.excepthook = except_hook
+    app.setWindowIcon(QtGui.QIcon('./Settings/images/logo.gif'))
     mainWindow = AL_Player()
     sys.exit(app.exec_())
